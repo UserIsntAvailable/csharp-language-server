@@ -17,6 +17,7 @@ open Ionide.LanguageServerProtocol.Server
 open Ionide.LanguageServerProtocol.Types
 
 open RoslynHelpers
+open SemanticTokens
 open Microsoft.CodeAnalysis.CodeFixes
 open ICSharpCode.Decompiler.CSharp
 open ICSharpCode.Decompiler
@@ -634,9 +635,15 @@ let setupServerHandlers options lspClient =
                                      Save = Some { IncludeText = Some true }
                                      Change = Some TextDocumentSyncKind.Incremental
                                  }
+                        SemanticTokensProvider =
+                            Some {
+                                // TODO(Unavailable): Send back only the tokens that the client wants
+                                Legend = semanticTokensLegend
+                                Range = None
+                                Full = Some (Second({ Delta = None }))
+                            }
                         FoldingRangeProvider = None
                         SelectionRangeProvider = None
-                        SemanticTokensProvider = None
                     }
               }
 
@@ -1157,6 +1164,27 @@ let setupServerHandlers options lspClient =
 
         return WorkspaceEdit.Create (docChanges |> Array.ofList, scope.ClientCapabilities.Value) |> Some |> success
     }
+    
+    let handleTextDocumentSemanticTokensFull (scope: ServerRequestScope) (p: Types.SemanticTokensParams): AsyncLspResult<Types.SemanticTokens option> = async {
+        let docMaybe = scope.GetAnyDocumentForUri p.TextDocument.Uri
+        match docMaybe with
+        | Some doc ->
+            let! ct = Async.CancellationToken
+            let! semanticModel = doc.GetSemanticModelAsync(ct) |> Async.AwaitTask
+            let! root = doc.GetSyntaxRootAsync(ct) |> Async.AwaitTask
+            
+            // TODO(Unavailable): I can make this more general for others SemanticTokens methods
+            let collector = SemanticTokenFullCollector semanticModel
+            collector.Visit(root)
+            
+            return {
+                ResultId = None
+                Data = collector.GetTokens()
+                } |> Some |> success
+            
+        | None ->
+            return None |> success
+    }
 
     let handleTextDocumentSignatureHelp (scope: ServerRequestScope) (sigHelpParams: Types.SignatureHelpParams): AsyncLspResult<Types.SignatureHelp option> =
         let docMaybe = scope.GetUserDocumentForUri sigHelpParams.TextDocument.Uri
@@ -1443,33 +1471,34 @@ let setupServerHandlers options lspClient =
         }
 
     [
-        "initialize"                     , handleInitialize                    |> withReadWriteScope |> requestHandling
-        "initialized"                    , handleInitialized                   |> withReadWriteScope |> withNotificationSuccess |> requestHandling
-        "textDocument/didChange"         , handleTextDocumentDidChange         |> withReadWriteScope |> withNotificationSuccess |> requestHandling
-        "textDocument/didClose"          , handleTextDocumentDidClose          |> withReadWriteScope |> withNotificationSuccess |> requestHandling
-        "textDocument/didOpen"           , handleTextDocumentDidOpen           |> withReadWriteScope |> withNotificationSuccess |> requestHandling
-        "textDocument/didSave"           , handleTextDocumentDidSave           |> withReadWriteScope |> withNotificationSuccess |> requestHandling
-        "textDocument/codeAction"        , handleTextDocumentCodeAction        |> withReadOnlyScope |> requestHandling
-        "codeAction/resolve"             , handleCodeActionResolve             |> withReadOnlyScope |> requestHandling
-        "textDocument/codeLens"          , handleTextDocumentCodeLens          |> withReadOnlyScope |> requestHandling
-        "codeLens/resolve"               , handleCodeLensResolve               |> withReadOnlyScope |> withTimeoutOfMS 10000 |> requestHandling
-        "textDocument/completion"        , handleTextDocumentCompletion        |> withReadOnlyScope |> requestHandling
-        "textDocument/definition"        , handleTextDocumentDefinition        |> withReadOnlyScope |> requestHandling
-        "textDocument/documentHighlight" , handleTextDocumentDocumentHighlight |> withReadOnlyScope |> requestHandling
-        "textDocument/documentSymbol"    , handleTextDocumentDocumentSymbol    |> withReadOnlyScope |> requestHandling
-        "textDocument/hover"             , handleTextDocumentHover             |> withReadOnlyScope |> requestHandling
-        "textDocument/implementation"    , handleTextDocumentImplementation    |> withReadOnlyScope |> requestHandling
-        "textDocument/formatting"        , handleTextDocumentFormatting        |> withReadOnlyScope |> requestHandling
-        "textDocument/onTypeFormatting"  , handleTextDocumentOnTypeFormatting  |> withReadOnlyScope |> requestHandling
-        "textDocument/rangeFormatting"   , handleTextDocumentRangeFormatting   |> withReadOnlyScope |> requestHandling
-        "textDocument/references"        , handleTextDocumentReferences        |> withReadOnlyScope |> requestHandling
-        "textDocument/rename"            , handleTextDocumentRename            |> withReadOnlyScope |> requestHandling
-        "textDocument/signatureHelp"     , handleTextDocumentSignatureHelp     |> withReadOnlyScope |> requestHandling
-        "workspace/symbol"               , handleWorkspaceSymbol               |> withReadOnlyScope |> requestHandling
-        "workspace/didChangeWatchedFiles", handleWorkspaceDidChangeWatchedFiles |> withReadWriteScope |> withNotificationSuccess |> requestHandling
-        "csharp/metadata"                , handleCSharpMetadata                |> withReadOnlyScope |> requestHandling
-    ]
-    |> Map.ofList
+        "initialize"                       , handleInitialize                     |> withReadWriteScope |> requestHandling
+        "initialized"                      , handleInitialized                    |> withReadWriteScope |> withNotificationSuccess |> requestHandling
+        "codeAction/resolve"               , handleCodeActionResolve              |> withReadOnlyScope  |> requestHandling
+        "codeLens/resolve"                 , handleCodeLensResolve                |> withReadOnlyScope  |> withTimeoutOfMS 10000   |> requestHandling
+        "textDocument/codeAction"          , handleTextDocumentCodeAction         |> withReadOnlyScope  |> requestHandling
+        "textDocument/codeLens"            , handleTextDocumentCodeLens           |> withReadOnlyScope  |> requestHandling
+        "textDocument/completion"          , handleTextDocumentCompletion         |> withReadOnlyScope  |> requestHandling
+        "textDocument/definition"          , handleTextDocumentDefinition         |> withReadOnlyScope  |> requestHandling
+        "textDocument/didChange"           , handleTextDocumentDidChange          |> withReadWriteScope |> withNotificationSuccess |> requestHandling
+        "textDocument/didClose"            , handleTextDocumentDidClose           |> withReadWriteScope |> withNotificationSuccess |> requestHandling
+        "textDocument/didOpen"             , handleTextDocumentDidOpen            |> withReadWriteScope |> withNotificationSuccess |> requestHandling
+        "textDocument/didSave"             , handleTextDocumentDidSave            |> withReadWriteScope |> withNotificationSuccess |> requestHandling
+        "textDocument/documentHighlight"   , handleTextDocumentDocumentHighlight  |> withReadOnlyScope  |> requestHandling
+        "textDocument/documentSymbol"      , handleTextDocumentDocumentSymbol     |> withReadOnlyScope  |> requestHandling
+        "textDocument/formatting"          , handleTextDocumentFormatting         |> withReadOnlyScope  |> requestHandling
+        "textDocument/hover"               , handleTextDocumentHover              |> withReadOnlyScope  |> requestHandling
+        "textDocument/implementation"      , handleTextDocumentImplementation     |> withReadOnlyScope  |> requestHandling
+        "textDocument/onTypeFormatting"    , handleTextDocumentOnTypeFormatting   |> withReadOnlyScope  |> requestHandling
+        "textDocument/rangeFormatting"     , handleTextDocumentRangeFormatting    |> withReadOnlyScope  |> requestHandling
+        "textDocument/references"          , handleTextDocumentReferences         |> withReadOnlyScope  |> requestHandling
+        "textDocument/rename"              , handleTextDocumentRename             |> withReadOnlyScope  |> requestHandling
+        // FIX(Unavailable): Should I add a timeout?
+        "textDocument/semanticTokens/full" , handleTextDocumentSemanticTokensFull |> withReadOnlyScope  |> requestHandling
+        "textDocument/signatureHelp"       , handleTextDocumentSignatureHelp      |> withReadOnlyScope  |> requestHandling
+        "workspace/didChangeWatchedFiles"  , handleWorkspaceDidChangeWatchedFiles |> withReadWriteScope |> withNotificationSuccess |> requestHandling
+        "workspace/symbol"                 , handleWorkspaceSymbol                |> withReadOnlyScope  |> requestHandling
+        "csharp/metadata"                  , handleCSharpMetadata                 |> withReadOnlyScope  |> requestHandling
+    ] |> Map.ofList
 
 let startCore options =
     use input = Console.OpenStandardInput()

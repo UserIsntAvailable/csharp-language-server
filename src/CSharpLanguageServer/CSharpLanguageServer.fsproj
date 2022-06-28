@@ -19,6 +19,7 @@
 
   <ItemGroup>
     <Compile Include="RoslynHelpers.fs" />
+    <Compile Include="SemanticTokens.fs" />
     <Compile Include="Documentation.fs" />
     <Compile Include="Server.fs" />
     <Compile Include="Options.fs" />
